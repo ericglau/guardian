@@ -394,6 +394,65 @@ describe('GuardianOperatorHttpClient', () => {
     );
   });
 
+  // ---------------------------------------------------------------
+  // Feature 006-operator-authz US6 / FR-033..FR-036:
+  // GET /dashboard/session — operator identity + effective permissions.
+  // ---------------------------------------------------------------
+
+  it('fetches /dashboard/session and parses operator_id + permissions', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({
+      operator_id: '0xabc123',
+      permissions: ['accounts:pause', 'dashboard:read'],
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const session = await client.getSession();
+
+    expect(session).toEqual({
+      operatorId: '0xabc123',
+      permissions: ['accounts:pause', 'dashboard:read'],
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/session',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('parses /dashboard/session with an empty permissions array (explicit-empty operator)', async () => {
+    // FR-034: an operator with `permissions: []` receives 200 with
+    // an empty array, NOT 403. The client must surface this state
+    // distinctly from a 401 so the dashboard can render "no
+    // capabilities" vs "not logged in".
+    mockFetch.mockResolvedValueOnce(okJson({
+      operator_id: '0xdef456',
+      permissions: [],
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const session = await client.getSession();
+
+    expect(session).toEqual({
+      operatorId: '0xdef456',
+      permissions: [],
+    });
+  });
+
+  it('rejects /dashboard/session with an unknown permission string', async () => {
+    // Surfacing server/client vocabulary drift as a contract failure
+    // is the load-bearing property — a stale client breaking against
+    // a new-server permission is better than silently flowing through.
+    mockFetch.mockResolvedValueOnce(okJson({
+      operator_id: '0xabc123',
+      permissions: ['dashboard:read', 'accounts:freeze'],
+    }));
+
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const error = await client.getSession().catch((value) => value);
+
+    expect(error).toBeInstanceOf(GuardianOperatorContractError);
+    expect(String(error)).toContain('accounts:freeze');
+  });
+
   it('logs out with a POST request and parses the response', async () => {
     mockFetch.mockResolvedValueOnce(okJson({
       success: true,
@@ -1045,6 +1104,98 @@ describe('isDashboardErrorCode', () => {
     // accepted by mistake.
     expect(isDashboardErrorCode('unauthorized')).toBe(false);
     expect(isDashboardErrorCode('')).toBe(false);
+  });
+
+  it('narrows the feature-006-operator-authz permission-denial code', () => {
+    // The typed union uses snake_case; the wire emits SCREAMING_SNAKE
+    // and `parseErrorBody` maps at the boundary.
+    expect(isDashboardErrorCode('insufficient_operator_permission')).toBe(true);
+    expect(
+      isDashboardErrorCode('GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION'),
+    ).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------
+// Feature 006-operator-authz, User Story 5: typed permission-denial
+// error surface.
+// -----------------------------------------------------------------
+
+describe('parseErrorBody (feature 006-operator-authz)', () => {
+  it('extracts missing_permissions and retryable on the permission-denial code', async () => {
+    const response = errorResponse({
+      status: 403,
+      statusText: 'Forbidden',
+      body: {
+        success: false,
+        code: 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
+        error: 'Operator lacks required permissions: accounts:pause',
+        missing_permissions: ['accounts:pause'],
+        retryable: false,
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    // Wire form maps to the typed snake_case surface.
+    expect(parsed.code).toBe('insufficient_operator_permission');
+    expect(parsed.missingPermissions).toEqual(['accounts:pause']);
+    expect(parsed.retryable).toBe(false);
+  });
+
+  it('leaves missingPermissions and retryable undefined on every other code', async () => {
+    const response = errorResponse({
+      status: 404,
+      statusText: 'Not Found',
+      body: {
+        success: false,
+        code: 'account_not_found',
+        error: "Account 'x' not found",
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    expect(parsed.code).toBe('account_not_found');
+    expect(parsed.missingPermissions).toBeUndefined();
+    expect(parsed.retryable).toBeUndefined();
+  });
+
+  it('preserves lexicographic ordering of missing_permissions from the server', async () => {
+    // The server pins lex-sort (FR-017); the client must not
+    // re-sort, dedupe, or reorder.
+    const response = errorResponse({
+      status: 403,
+      statusText: 'Forbidden',
+      body: {
+        success: false,
+        code: 'GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION',
+        error: 'multiple missing',
+        missing_permissions: ['accounts:pause', 'policies:write'],
+        retryable: false,
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    expect(parsed.missingPermissions).toEqual([
+      'accounts:pause',
+      'policies:write',
+    ]);
+  });
+
+  it('ignores missing_permissions if the code is not the permission-denial one', async () => {
+    // Defensive: a buggy server that emits the new field alongside
+    // another code should NOT cause clients to surface it as a
+    // permission-denial. We strictly gate the field on the code.
+    const response = errorResponse({
+      status: 404,
+      statusText: 'Not Found',
+      body: {
+        success: false,
+        code: 'account_not_found',
+        error: 'unrelated',
+        missing_permissions: ['accounts:pause'],
+        retryable: false,
+      },
+    });
+    const parsed = await parseErrorBody(response as unknown as Response);
+    expect(parsed.missingPermissions).toBeUndefined();
+    expect(parsed.retryable).toBeUndefined();
   });
 });
 

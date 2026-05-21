@@ -1,3 +1,5 @@
+import type { OperatorPermission } from './permissions.js';
+
 export type DashboardAccountStateStatus = 'available' | 'unavailable';
 
 export interface GuardianOperatorHttpErrorData {
@@ -13,6 +15,20 @@ export interface GuardianOperatorHttpErrorData {
   code?: string;
   error: string;
   retryAfterSecs?: number;
+  /**
+   * Feature 006-operator-authz FR-016 / FR-017: populated only for
+   * `insufficient_operator_permission` responses. Lists the
+   * permission strings the route required that the authenticated
+   * operator does not hold, sorted lexicographically. Absent for
+   * every other error code.
+   */
+  missingPermissions?: readonly string[];
+  /**
+   * Feature 006-operator-authz FR-016: explicit retryability flag.
+   * `false` for permission denials (the contract pins this); absent
+   * for every other code so existing parsers see no change.
+   */
+  retryable?: boolean;
 }
 
 export interface GuardianOperatorHttpClientOptions {
@@ -48,6 +64,19 @@ export interface VerifyOperatorResponse {
 
 export interface LogoutOperatorResponse {
   success: true;
+}
+
+/**
+ * Response shape for `GET /dashboard/session`. `permissions` is sorted
+ * lexicographic ASCII and may be empty (means "logged in, no
+ * capabilities" — distinct from a 401). The parser validates every
+ * entry against the known operator-permission vocabulary, so an
+ * unknown string surfaces as a contract error rather than flowing
+ * through silently.
+ */
+export interface SessionInfoResponse {
+  operatorId: string;
+  permissions: OperatorPermission[];
 }
 
 export interface DashboardAccountSummary {
@@ -125,7 +154,11 @@ export type DashboardErrorCode =
   // must be in the typed union so callers' `isDashboardErrorCode()`
   // narrowing branches on them without falling through.
   | 'unsupported_for_network'
-  | 'account_data_unavailable';
+  | 'account_data_unavailable'
+  // Feature 006-operator-authz FR-015: the wire string is uppercased
+  // per spec to make it visually distinct from the snake_case codes
+  // inherited from earlier features. Stable across releases.
+  | 'insufficient_operator_permission';
 
 export interface PagedResult<T> {
   items: T[];

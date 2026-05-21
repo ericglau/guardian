@@ -8,6 +8,14 @@ export {
 
 export type { PaginationOptions, ParsedErrorBody } from './http.js';
 
+export {
+  ACCOUNTS_PAUSE,
+  DASHBOARD_READ,
+  POLICIES_WRITE,
+} from './permissions.js';
+
+export type { OperatorPermission } from './permissions.js';
+
 export type {
   DashboardAccountDetail,
   DashboardAccountResponse,
@@ -28,6 +36,7 @@ export type {
   OperatorChallenge,
   OperatorChallengeResponse,
   PagedResult,
+  SessionInfoResponse,
   VerifyOperatorRequest,
   VerifyOperatorResponse,
 } from './types.js';
